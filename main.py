@@ -1,7 +1,10 @@
 
 import time
+from pathlib import Path
 
-from tournees import (
+DOSSIER_INSTANCES = Path(__file__).parent / "instances"
+
+from src.tournees import (
     charger_instance,
     construction_gloutonne_sequentielle,
     construction_gloutonne_parallele,
@@ -26,7 +29,7 @@ criteres = ["ratio", "proche", "profit"]
 
 
 for fichier in instances:
-    n, m, L, P, D = charger_instance(fichier)
+    n, m, L, P, D = charger_instance(DOSSIER_INSTANCES / fichier)
     d, a = n, n + 1
     profit_disponible = sum(P)
 
