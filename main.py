@@ -1,22 +1,20 @@
-
+import copy
 import time
 from pathlib import Path
 
-DOSSIER_INSTANCES = Path(__file__).parent / "instances"
+from src.utils import (charger_instance, profit_total, profit_tournee, duree_totale,
+                       duree_tournee, solution_valide)
+from src.construction import (construction_gloutonne_sequentielle,
+                              construction_gloutonne_parallele)
+from src.optimisations import optimiser_2opt, optimiser_globale
+from src.visualisation import tracer_solution
 
-from src.tournees import (
-    charger_instance,
-    construction_gloutonne_sequentielle,
-    construction_gloutonne_parallele,
-    optimiser_2opt,
-    profit_total,
-    duree_totale,
-    duree_tournee,
-    solution_valide,
-)
+DOSSIER_INSTANCES = Path(__file__).parent / "instances"
+DOSSIER_RESULTATS = Path(__file__).parent / "resultats"
+AFFICHER_GRAPHIQUE = True        # False : seulement sauvegarder les images
 
 instances = [
-    "p1.2.k.txt",
+    "p7.4.r.txt",
     "p7.4.q.txt",
 ]
 
@@ -29,90 +27,57 @@ criteres = ["ratio", "proche", "profit"]
 
 
 for fichier in instances:
-    n, m, L, P, D = charger_instance(DOSSIER_INSTANCES / fichier)
+    n, m, L, P, D, coords = charger_instance(DOSSIER_INSTANCES / fichier)
     d, a = n, n + 1
-    profit_disponible = sum(P)
 
     print("\n" + "=" * 100)
-    print(f"{fichier} : n = {n}, m = {m}, L = {L}, Profit total disponible : {profit_disponible}")
+    print(f"{fichier} : n = {n}, m = {m}, L = {L}, Profit total disponible : {sum(P):.0f}")
     print("=" * 100)
+    print(f"{'Méthode':<13} {'Critère':<9} {'Glouton':>9} {'+ 2-Opt':>9} "
+          f"{'+ Global':>9} {'Durée':>9} {'Clients':>8} {'Temps(s)':>9}")
 
-    print(
-        f"{'Méthode':<13} {'Critère':<9} "
-        f"{'Glouton':>9} {'Durée':>9} "
-        f"{'+ 2-Opt':>9} {'Durée':>9} "
-        f"{'Clients':>8} {'Temps exécution(s)':>11}"
-    
-    )
-
-    meilleure_solution = None
-    meilleur_profit = -1
+    meilleur = None   # (profit, -durée, nom, critère, tournées)
 
     for nom, methode in methodes.items():
         for critere in criteres:
             debut = time.perf_counter()
 
-            tournees = methode(
-                D, P, L, m, n, d, a, critere=critere
-            )
+            tournees = methode(D, P, L, m, n, d, a, critere=critere)
+            p_glouton = profit_total(P, tournees)
 
-            profit_initial = profit_total(P, tournees)
-            duree_initiale = duree_totale(D, tournees, d, a)
+            optimiser_2opt(D, P, L, tournees, n, d, a, critere=critere)
+            p_2opt = profit_total(P, tournees)
 
-            optimiser_2opt(
-                D, P, L, tournees, n, d, a, critere=critere
-            )
-
-            profit_final = profit_total(P, tournees)
+            optimiser_globale(D, P, L, tournees, n, d, a, critere=critere)
+            p_final = profit_total(P, tournees)
             duree_finale = duree_totale(D, tournees, d, a)
             nb_clients = sum(len(t) for t in tournees)
 
             temps = time.perf_counter() - debut
+            assert solution_valide(D, L, m, d, a, tournees, n), "Solution non valide !"
 
-            assert solution_valide(
-                D, L, m, d, a, tournees, n
-            ), "Solution non valide !"
+            print(f"{nom:<13} {critere:<9} {p_glouton:>9.0f} {p_2opt:>9.0f} "
+                  f"{p_final:>9.0f} {duree_finale:>9.2f} {nb_clients:>8} {temps:>9.4f}")
 
-            print(
-                f"{nom:<13} {critere:<9} "
-                f"{profit_initial:>9.0f} {duree_initiale:>9.2f} "
-                f"{profit_final:>9.0f} {duree_finale:>9.2f} "
-                f"{nb_clients:>8} {temps:>11.4f}"
-            )
+            cle = (p_final, -duree_finale)
+            if meilleur is None or cle > meilleur[0]:
+                meilleur = (cle, nom, critere, copy.deepcopy(tournees))
 
-            if profit_final > meilleur_profit:
-                meilleur_profit = profit_final
-                meilleure_solution = (
-                    nom,
-                    critere,
-                    [t.copy() for t in tournees]
-                )
+    (profit_best, _), nom, critere, tournees = meilleur
+    print(f"\nMeilleure solution : {nom}, critère '{critere}', "
+          f"profit total collecté = {profit_best:.0f}")
 
-    nom, critere, tournees = meilleure_solution
+    for k, t in enumerate(tournees, start=1):
+        parcours = " -> ".join(["d"] + [str(c + 1) for c in t] + ["a"])
+        print(f"Véhicule {k} : {parcours} "
+              f"(profit {profit_tournee(P, t):.0f}, durée {duree_tournee(D, t, d, a):.2f} / {L})")
 
-    print(
-        f"\nMeilleure solution : {nom}, "
-        f"critère '{critere}', profit total collecté = {meilleur_profit:.0f}"
-    )
-    
+    visites = {c for t in tournees for c in t}
+    non_visites = sorted(set(range(n)) - visites)
+    print(f"\nClients non visités ({len(non_visites)}) : {[c + 1 for c in non_visites]}")
 
-    for k, tournee in enumerate(tournees, start=1):
-        parcours = " -> ".join(
-            ["d"] + [str(c + 1) for c in tournee] + ["a"]
-        )
-
-        duree = duree_tournee(D, tournee, d, a)
-
-        print(
-            f"Véhicule {k} : {parcours} "
-            f"(durée {duree:.2f} / {L})"
-        )
-    
-    # Clients non visités
-    clients_visites = {c for tournee in tournees for c in tournee}
-    clients_non_visites = sorted(set(range(n)) - clients_visites)
-
-    print(
-        f"\nClients non visités ({len(clients_non_visites)}) : "
-        f"{[c + 1 for c in clients_non_visites]}"
-    )
+    DOSSIER_RESULTATS.mkdir(exist_ok=True)
+    tracer_solution(coords, P, D, L, tournees, d, a,
+                    titre=f"{fichier} - {nom} / {critere} - profit {profit_best:.0f}",
+                    fichier=DOSSIER_RESULTATS / f"{Path(fichier).stem}.png",
+                    afficher=AFFICHER_GRAPHIQUE)
