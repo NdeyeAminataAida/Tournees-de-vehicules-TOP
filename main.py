@@ -1,24 +1,30 @@
-
+"""Point d’entrée du programme de résolution du TOP."""
+import copy
 import time
 from pathlib import Path
 
-DOSSIER_INSTANCES = Path(__file__).parent / "instances"
+from src.utils import charger_instance, solution_valide
+from src.utils import profit_total, duree_totale
+from src.construction import (construction_gloutonne_sequentielle,
+                              construction_gloutonne_parallele)
+from src.optimisations import optimiser_2opt, optimiser_globale
+from src.visualisation import tracer_solution
+from src.affichage import (entete_instance, tableau_etapes, tableau_temps,
+                           detail_meilleure_solution, resume_instance, bilan_global)
 
-from src.tournees import (
-    charger_instance,
-    construction_gloutonne_sequentielle,
-    construction_gloutonne_parallele,
-    optimiser_2opt,
-    profit_total,
-    duree_totale,
-    duree_tournee,
-    solution_valide,
-)
+# ----------------------------------------------------------------------------
+# Paramètres globaux
+# ----------------------------------------------------------------------------
+DOSSIER_INSTANCES = Path(__file__).parent / "instances"
+DOSSIER_RESULTATS = Path(__file__).parent / "resultats"
+AFFICHER_GRAPHIQUE = False        # False : seulement sauvegarder les images
 
 instances = [
     "p1.2.k.txt",
     "p7.4.q.txt",
 ]
+
+MODE_AFFICHAGE = "detail"  # "resume" ou "detail"
 
 methodes = {
     "Séquentiel": construction_gloutonne_sequentielle,
@@ -27,92 +33,75 @@ methodes = {
 
 criteres = ["ratio", "proche", "profit"]
 
-
+# ----------------------------------------------------------------------------
+# Programme principal
+# ----------------------------------------------------------------------------
+bilan_instances = []
 for fichier in instances:
-    n, m, L, P, D = charger_instance(DOSSIER_INSTANCES / fichier)
+    chemin = DOSSIER_INSTANCES / fichier
+    if not chemin.exists():
+        print(f"\n[!] Instance introuvable, ignorée : {chemin}")
+        continue
+
+    n, m, L, P, D, coords = charger_instance(chemin)
     d, a = n, n + 1
-    profit_disponible = sum(P)
+    if MODE_AFFICHAGE == "detail":
+        entete_instance(fichier, n, m, L, P, D, d, a)
 
-    print("\n" + "=" * 100)
-    print(f"{fichier} : n = {n}, m = {m}, L = {L}, Profit total disponible : {profit_disponible}")
-    print("=" * 100)
-
-    print(
-        f"{'Méthode':<13} {'Critère':<9} "
-        f"{'Glouton':>9} {'Durée':>9} "
-        f"{'+ 2-Opt':>9} {'Durée':>9} "
-        f"{'Clients':>8} {'Temps exécution(s)':>11}"
-    
-    )
-
-    meilleure_solution = None
-    meilleur_profit = -1
-
+    resultats = []
     for nom, methode in methodes.items():
         for critere in criteres:
-            debut = time.perf_counter()
+            # Étape 1 : glouton
+            t0 = time.perf_counter()
+            sol_glouton = methode(D, P, L, m, n, d, a, critere=critere)
+            t1 = time.perf_counter()
 
-            tournees = methode(
-                D, P, L, m, n, d, a, critere=critere
-            )
+            # Étape 2 : 2-Opt (avec réinsertion des clients libres)
+            sol_2opt = copy.deepcopy(sol_glouton)
+            optimiser_2opt(D, P, L, sol_2opt, n, d, a, critere=critere)
+            t2 = time.perf_counter()
 
-            profit_initial = profit_total(P, tournees)
-            duree_initiale = duree_totale(D, tournees, d, a)
+            # Étape 3 : boucle globale (2-Opt, insertion, relocation, réinsertion)
+            sol_global = copy.deepcopy(sol_2opt)
+            optimiser_globale(D, P, L, sol_global, n, d, a, critere=critere)
+            t3 = time.perf_counter()
 
-            optimiser_2opt(
-                D, P, L, tournees, n, d, a, critere=critere
-            )
+            for sol in (sol_glouton, sol_2opt, sol_global):
+                if not solution_valide(D, L, m, d, a, sol, n):
+                    raise ValueError(f"Solution invalide : {fichier} / {nom} / {critere}")
 
-            profit_final = profit_total(P, tournees)
-            duree_finale = duree_totale(D, tournees, d, a)
-            nb_clients = sum(len(t) for t in tournees)
+            resultats.append({
+                "nom": nom, "critere": critere,
+                "clients": sum(len(t) for t in sol_global),
+                "p_glouton": profit_total(P, sol_glouton), "d_glouton": duree_totale(D, sol_glouton, d, a),
+                "p_2opt": profit_total(P, sol_2opt),       "d_2opt": duree_totale(D, sol_2opt, d, a),
+                "p_global": profit_total(P, sol_global),   "d_global": duree_totale(D, sol_global, d, a),
+                "t_glouton": t1 - t0, "t_2opt": t2 - t1, "t_global": t3 - t2,
+                "sol_glouton": sol_glouton, "sol_2opt": sol_2opt, "sol_global": sol_global,
+            })
 
-            temps = time.perf_counter() - debut
+    # Meilleure configuration : profit maximal, puis durée totale minimale
+    i_meilleur = max(range(len(resultats)),
+                     key=lambda i: (resultats[i]["p_global"], -resultats[i]["d_global"]))
+    meilleur = resultats[i_meilleur]
 
-            assert solution_valide(
-                D, L, m, d, a, tournees, n
-            ), "Solution non valide !"
+    if MODE_AFFICHAGE == "detail":
+        tableau_etapes(resultats, i_meilleur)
+        tableau_temps(resultats)
+        detail_meilleure_solution(meilleur, P, D, L, n, d, a)
+    elif MODE_AFFICHAGE == "resume":
+        resume_instance(fichier, n, m, L, meilleur)
+    else:
+        raise ValueError("MODE_AFFICHAGE doit être 'resume' ou 'detail'")
 
-            print(
-                f"{nom:<13} {critere:<9} "
-                f"{profit_initial:>9.0f} {duree_initiale:>9.2f} "
-                f"{profit_final:>9.0f} {duree_finale:>9.2f} "
-                f"{nb_clients:>8} {temps:>11.4f}"
-            )
+    bilan_instances.append((fichier, meilleur))
 
-            if profit_final > meilleur_profit:
-                meilleur_profit = profit_final
-                meilleure_solution = (
-                    nom,
-                    critere,
-                    [t.copy() for t in tournees]
-                )
+    DOSSIER_RESULTATS.mkdir(exist_ok=True)
+    tracer_solution(coords, P, D, L, meilleur["sol_global"], d, a,
+                    titre=f"{fichier} - {meilleur['nom']} / {meilleur['critere']} "
+                          f"- profit {meilleur['p_global']:.0f}",
+                    fichier=DOSSIER_RESULTATS / f"{Path(fichier).stem}.png",
+                    afficher=AFFICHER_GRAPHIQUE)
 
-    nom, critere, tournees = meilleure_solution
-
-    print(
-        f"\nMeilleure solution : {nom}, "
-        f"critère '{critere}', profit total collecté = {meilleur_profit:.0f}"
-    )
-    
-
-    for k, tournee in enumerate(tournees, start=1):
-        parcours = " -> ".join(
-            ["d"] + [str(c + 1) for c in tournee] + ["a"]
-        )
-
-        duree = duree_tournee(D, tournee, d, a)
-
-        print(
-            f"Véhicule {k} : {parcours} "
-            f"(durée {duree:.2f} / {L})"
-        )
-    
-    # Clients non visités
-    clients_visites = {c for tournee in tournees for c in tournee}
-    clients_non_visites = sorted(set(range(n)) - clients_visites)
-
-    print(
-        f"\nClients non visités ({len(clients_non_visites)}) : "
-        f"{[c + 1 for c in clients_non_visites]}"
-    )
+if MODE_AFFICHAGE == "resume" and bilan_instances:
+    bilan_global(bilan_instances)
